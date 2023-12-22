@@ -2,8 +2,41 @@ use std::{net::IpAddr, process::Command};
 use etherparse::{IpHeader, PacketHeaders};
 use sysinfo::{PidExt, ProcessExt, ProcessRefreshKind, RefreshKind, System, SystemExt};
 use reqwest;
-use std::{fs, path::Path, io::Write};
+use serde::{Deserialize, Serialize};
+use std::{fs, path::Path};
 use tokio::runtime::Runtime; // Make sure this is included in your imports
+use tokio::time::Duration;
+
+#[derive(Serialize, Deserialize)]
+struct Config {
+    discord_webhook_url: String,
+    name: String,
+}
+
+impl Config {
+    fn new() -> Self {
+        Config {
+            discord_webhook_url: "https://discord.com/api/webhooks/your/webhook/url".to_string(),
+            name: "ChangeMe".to_string(),
+        }
+    }
+
+    fn load_or_create() -> Self {
+        let config_path = "config.json";
+        if Path::new(config_path).exists() {
+            let config_str = fs::read_to_string(config_path)
+                .expect("Failed to read config.json");
+            serde_json::from_str(&config_str).expect("Failed to parse config.json")
+        } else {
+            let config = Config::new();
+            let config_str = serde_json::to_string_pretty(&config)
+                .expect("Failed to serialize config");
+            fs::write(config_path, config_str)
+                .expect("Failed to write default config.json");
+            config
+        }
+    }
+}
 
 fn get_sot_pid(s: &System) -> Option<u32> {
     for process in s.processes_by_name("SoTGame.exe") {
@@ -40,159 +73,173 @@ fn get_sot_ports(pid: u32) -> Vec<u16> {
 }
 
 fn main() {
-
-    println!("Insane Sea Of Thieves Server ip Gatherer\n");
-
     let rt = Runtime::new().expect("Failed to create Tokio runtime");
 
     rt.block_on(async {
-        let secret = if Path::new("secret.txt").exists() {
-            fs::read_to_string("secret.txt").expect("Failed to read secret.txt")
-        } else {
-            println!("Enter the secret from https://sot.insane.software:");
-            let mut secret = String::new();
-            std::io::stdin().read_line(&mut secret).expect("Failed to read line");
-            let secret = secret.trim().to_string();
+        println!("Insane Sea Of Thieves Server ip Gatherer\n");
 
-            println!("\n");
-            let mut file = fs::File::create("secret.txt").expect("Failed to create secret.txt");
-            file.write_all(secret.as_bytes()).expect("Failed to write to secret.txt");
-            secret
-        };
+        let mut config = Config::load_or_create(); // Declare `config` as mutable
 
-        let name = if Path::new("name.txt").exists() {
-            fs::read_to_string("name.txt").expect("Failed to read name.txt")
-        } else {
-            println!("Enter your name/identifier");
-            let mut name = String::new();
-            std::io::stdin().read_line(&mut name).expect("Failed to read line");
-            let name = name.trim().to_string();
+        // Check if the name is still the default value
+        if config.name == "ChangeMe" {
+            println!("It seems like you're using the default name. Please enter your correct name/identifier:");
+            let mut new_name = String::new();
+            std::io::stdin().read_line(&mut new_name).expect("Failed to read line");
+            let new_name = new_name.trim().to_string();
+            config.name = new_name;
 
-            println!("\n");
-            let mut file = fs::File::create("name.txt").expect("Failed to create name.txt");
-            file.write_all(name.as_bytes()).expect("Failed to write to name.txt");
-            name
-        };
+            // Save the updated name back to the config file
+            let config_str = serde_json::to_string_pretty(&config).expect("Failed to serialize config");
+            fs::write("config.json", config_str).expect("Failed to write updated config.json");
+        }
 
         println!("Making sure you have Npcap installed...");
 
+        unsafe {
+            let try_load_wpcap = libloading::Library::new("wpcap.dll");
+            if try_load_wpcap.is_err() {
+                println!("{}", "*".repeat(80));
+                println!("ERROR: It doesn't seem like you've installed Npcap.");
+                println!("Please install Npcap from\n    https://npcap.com/dist/npcap-1.72.exe\n");
+                println!("*** MAKE SURE TO INSTALL WITH 'WinPcap API Compatibility' TURNED ON ***");
+                println!("{}\n", "*".repeat(80));
+                println!("Want to continue anyway? Enter 'yes' or 'no':");
 
-    unsafe {
-        let try_load_wpcap = libloading::Library::new("wpcap.dll");
-        if try_load_wpcap.is_err() {
-            println!("{}", "*".repeat(80));
-            println!("ERROR: It doesn't seem like you've installed Npcap.");
-            println!("Please install Npcap from\n    https://npcap.com/dist/npcap-1.72.exe\n");
-            println!("*** MAKE SURE TO INSTALL WITH 'WinPcap API Compatibility' TURNED ON ***");
-            println!("{}\n", "*".repeat(80));
-            println!("Want to continue anyway? Enter 'yes' or 'no':");
-            
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input).unwrap();
-            let input = input.trim().to_lowercase();
-            if !(input == "y" || input == "yes") {
-                std::process::exit(1);
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                let input = input.trim().to_lowercase();
+                if !(input == "y" || input == "yes") {
+                    std::process::exit(1);
+                }
             }
         }
-    }
 
-    println!("Npcap found! lets continue...\n");
+        println!("Npcap found! lets continue...\n");
 
-    // wait until we get a sot pid
-     println!("Finding your Sea of thieves game...");
-          let mut s = System::new_with_specifics(RefreshKind::new().with_processes(ProcessRefreshKind::new()));
-          let sot_pid = loop {
-              if let Some(pid) = get_sot_pid(&s) {
-                  break pid;
-              }
-              s.refresh_processes();
-          };
-
-    println!("Found! PID: {} \n", sot_pid);
-
-    let devices = pcap::Device::list().unwrap();
-    let auto_found_dev = devices.iter().find(|d| {
-        d.addresses.iter().any(|addr| {
-            if let IpAddr::V4(addr) = addr.addr {
-                addr.octets()[0] == 192 && addr.octets()[1] == 168
-            } else {
-                false
+        // wait until we get a sot pid
+        println!("Finding your Sea of thieves game...");
+        let mut s = System::new_with_specifics(RefreshKind::new().with_processes(ProcessRefreshKind::new()));
+        let sot_pid = loop {
+            if let Some(pid) = get_sot_pid(&s) {
+                break pid;
             }
-        })
-    });
+            s.refresh_processes();
+        };
 
-    let dev = match auto_found_dev {
-        Some(d) => d.clone(),
-        None => {
-            println!("Couldn't guess which network adapter to use. Please select one manually.");
-            println!("Network adapters attached to your PC: ");
+        println!("Found! PID: {} \n", sot_pid);
 
-            let devices = pcap::Device::list().expect("device lookup failed");
-            let mut i = 1;
+        let devices = pcap::Device::list().unwrap();
+        let auto_found_dev = devices.iter().find(|d| {
+            d.addresses.iter().any(|addr| {
+                if let IpAddr::V4(addr) = addr.addr {
+                    addr.octets()[0] == 192 && addr.octets()[1] == 168
+                } else {
+                    false
+                }
+            })
+        });
 
-            for device in devices.clone() {
+        let dev = match auto_found_dev {
+            Some(d) => d.clone(),
+            None => {
+                println!("Couldn't guess which network adapter to use. Please select one manually.");
+                println!("Network adapters attached to your PC: ");
+
+                let devices = pcap::Device::list().expect("device lookup failed");
+                let mut i = 1;
+
+                for device in devices.clone() {
+                    println!(
+                        "    {i}. {:?}",
+                        device.desc.clone().unwrap_or(device.name.clone())
+                    );
+                    i += 1;
+                }
+
+                // prompt user for their device
                 println!(
-                    "    {i}. {:?}",
-                    device.desc.clone().unwrap_or(device.name.clone())
+                    "Please select your WiFi or Ethernet card, or if you're on a VPN, select the VPN: "
                 );
-                i += 1;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                let n = input.trim().parse::<usize>().unwrap() - 1;
+
+                (&devices[n]).clone()
             }
+        };
 
-            // prompt user for their device
-            println!(
-                "Please select your WiFi or Ethernet card, or if you're on a VPN, select the VPN: "
-            );
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input).unwrap();
-            let n = input.trim().parse::<usize>().unwrap() - 1;
+        let mut cap = pcap::Capture::from_device(dev)
+            .unwrap()
+            .immediate_mode(true)
+            .open()
+            .unwrap();
 
-            (&devices[n]).clone()
+        println!("Waiting for you to connect to a game in Sea of Thieves...\n");
+
+        let webhook_url = &config.discord_webhook_url;
+        let mut last_ip = String::new();
+        let mut connection_count = 0;
+        let mut ignore_local_port: u16 = 0;
+
+        // Iterate udp packets
+        loop {
+            if let Ok(raw_packet) = cap.next_packet() {
+                if let Ok(packet) = PacketHeaders::from_ethernet_slice(raw_packet.data) {
+                    if let Some(IpHeader::Version4(ipv4, _)) = packet.ip {
+                        if let Some(transport) = packet.transport {
+                            if let Some(udp) = transport.udp() {
+                                if udp.destination_port == 3075 || udp.destination_port == 30005 {
+                                    continue;
+                                }
+
+                                if get_sot_ports(sot_pid).contains(&udp.source_port) {
+                                    let ip = ipv4.destination.map(|c| c.to_string()).join(".");
+                                    if ip != last_ip {
+                                        connection_count += 1;
+                                        if udp.source_port == ignore_local_port {
+                                            println!("Still ignoring Local port: {}", udp.source_port);
+                                            continue;
+                                        }
+
+                                        if connection_count == 2 {
+                                            ignore_local_port = udp.source_port;
+                                            println!("Ignoring Local port: {}", udp.source_port);
+                                            continue;
+                                        }
+
+
+                                        // Use the reference to webhook_url here
+                                        let json_payload = serde_json::json!({
+                                                "content": format!("Server: IP: {}:{}, Name: {}", ip, udp.destination_port, config.name)
+                                        }).to_string();
+
+                                        println!("You are connected to: {}:{}", ip, udp.destination_port);
+                                        last_ip = ip; // Update the last known IP
+
+                                        let client = reqwest::Client::new();
+                                        let res = client.post(webhook_url) // No need to clone, as we're using a reference
+                                            .header("Content-Type", "application/json")
+                                            .body(json_payload)
+                                            .send()
+                                            .await;
+
+                                        match res {
+                                            Ok(_response) => {
+                                                println!("Server info sent to Discord webhook.");
+                                            }
+                                            Err(e) => {
+                                                eprintln!("Request failed: {}", e);
+                                            }
+                                        }
+                                    }
+                                    tokio::time::sleep(Duration::from_secs(1)).await; // Add a 1-second delay
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
-    };
-
-     let mut cap = pcap::Capture::from_device(dev)
-                .unwrap()
-                .immediate_mode(true)
-                .open()
-                .unwrap();
-
-    println!("Waiting for you to connect to a game in Sea of Thieves...\n");
-
-    // iterate udp packets
-           loop {
-               if let Ok(raw_packet) = cap.next_packet() {
-                   if let Ok(packet) = PacketHeaders::from_ethernet_slice(raw_packet.data) {
-                       if let Some(IpHeader::Version4(ipv4, _)) = packet.ip {
-                           if let Some(transport) = packet.transport {
-                               if let Some(udp) = transport.udp() {
-                                   if udp.destination_port == 3075 || udp.destination_port == 30005 {
-                                       continue;
-                                   }
-
-                                   if get_sot_ports(sot_pid).contains(&udp.source_port) {
-                                       let ip = ipv4.destination.map(|c| c.to_string()).join(".");
-                                       println!("You are connected to: {}:{}", ip, udp.destination_port);
-
-                                       let url = format!("https://sot.insane.software/api/data?ip={}&port={}&secret={}&name={}", ip, udp.destination_port, secret, name);
-                                       match reqwest::get(&url).await {
-                                           Ok(_response) => {
-                                               println!("Server info sended to https://sot.insane.software?secret={}", secret );
-                                           }
-                                           Err(e) => {
-                                               eprintln!("Request failed: {}", e);
-                                           }
-                                       }
-
-                                       println!("\nPress Enter to check again.");
-
-                                       std::io::stdin().read_line(&mut String::new()).unwrap();
-                                       continue;
-                                   }
-                               }
-                           }
-                       }
-                   }
-               }
-           }
-       });
-   }
+    });
+}
