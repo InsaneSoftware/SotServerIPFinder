@@ -4,8 +4,9 @@ use sysinfo::{PidExt, ProcessExt, ProcessRefreshKind, RefreshKind, System, Syste
 use reqwest;
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
-use tokio::runtime::Runtime; // Make sure this is included in your imports
+use tokio::runtime::Runtime;
 use tokio::time::Duration;
+use get_if_addrs::{get_if_addrs};
 
 #[derive(Serialize, Deserialize)]
 struct Config {
@@ -79,6 +80,8 @@ fn main() {
         println!("Insane Sea Of Thieves Server ip Gatherer\n");
 
         let mut config = Config::load_or_create(); // Declare `config` as mutable
+        let mut insane_vpn_interface_name = None;
+        let devices = pcap::Device::list().unwrap();
 
         // Check if the name is still the default value
         if config.name == "ChangeMe" {
@@ -93,7 +96,6 @@ fn main() {
             fs::write("config.json", config_str).expect("Failed to write updated config.json");
         }
 
-        println!("Making sure you have Npcap installed...");
 
         unsafe {
             let try_load_wpcap = libloading::Library::new("wpcap.dll");
@@ -114,7 +116,7 @@ fn main() {
             }
         }
 
-        println!("Npcap found! lets continue...\n");
+        println!("Awesome! Npcap requirement found.\n");
 
         // wait until we get a sot pid
         println!("Finding your Sea of thieves game...");
@@ -128,43 +130,115 @@ fn main() {
 
         println!("Found! PID: {} \n", sot_pid);
 
-        let devices = pcap::Device::list().unwrap();
-        let auto_found_dev = devices.iter().find(|d| {
-            d.addresses.iter().any(|addr| {
-                if let IpAddr::V4(addr) = addr.addr {
-                    addr.octets()[0] == 192 && addr.octets()[1] == 168
-                } else {
-                    false
+        // Check for VPN connections
+        match get_if_addrs() {
+            Ok(ifaces) => {
+                for iface in ifaces {
+
+                    // Directly use the ip() method
+                    let ip_addr = iface.addr.ip();
+                    if ip_addr.to_string().contains("25.168") {
+                        insane_vpn_interface_name = Some(iface.name); // Store the VPN interface name
+                        break;
+                    }
                 }
-            })
+            }
+            Err(e) => {
+                eprintln!("Failed to get network interfaces: {}", e);
+            }
+        }
+
+
+        let auto_found_dev = devices.iter().find(|d| {
+            if insane_vpn_interface_name.is_some() {
+                false
+            } else {
+                d.addresses.iter().any(|addr| {
+                    if let IpAddr::V4(addr) = addr.addr {
+                        addr.octets()[0] == 192 && addr.octets()[1] == 168
+                    } else {
+                        false
+                    }
+                })
+            }
         });
 
         let dev = match auto_found_dev {
-            Some(d) => d.clone(),
+            Some(d) => {
+                println!("Using auto-found network adapter: {:?} \n", d.desc);
+                d.clone()
+            }
             None => {
-                println!("Couldn't guess which network adapter to use. Please select one manually.");
-                println!("Network adapters attached to your PC: ");
+                if insane_vpn_interface_name.is_some() {
+                    let mut n = 0;
+                    println!("Connected to an Insane Spike VPN!");
 
-                let devices = pcap::Device::list().expect("device lookup failed");
-                let mut i = 1;
+                    let mut i = 1;
+                    for device in devices.clone() {
+                        if device.desc.clone().unwrap().contains("Miniport (IP)") {
+                            println!("Auto selecting network adapter: {}", device.desc.clone().unwrap());
+                            n = i;
+                            break;
+                        };
+                        i += 1;
+                    }
 
-                for device in devices.clone() {
+                    if n == 0 {
+                        println!("Couldn't guess which VPN adapter to use. Please select one manually. (mostly its called VPN, Miniport etc)3");
+
+                        println!("Network adapters attached to your PC: ");
+
+                        let devices = pcap::Device::list().expect("device lookup failed");
+                        let mut i = 1;
+
+                        for device in devices.clone() {
+                            println!(
+                                "    {i}. {:?}",
+                                device.desc.clone().unwrap_or_else(|| device.name.clone())
+                            );
+
+                            i += 1;
+                        }
+
+
+                        // prompt user for their device
+                        println!(
+                            "Please select your WiFi or Ethernet card, or if you're on a VPN, select the VPN: "
+                        );
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input).unwrap();
+                        n = input.trim().parse::<usize>().unwrap() - 1;
+                    }
+
+                    (&devices[n]).clone()
+                } else {
+                    println!("Couldn't guess which network adapter to use. Please select one manually.");
+
+                    println!("Network adapters attached to your PC: ");
+
+                    let devices = pcap::Device::list().expect("device lookup failed");
+                    let mut i = 1;
+
+                    for device in devices.clone() {
+                        println!(
+                            "    {i}. {:?}",
+                            device.desc.clone().unwrap_or_else(|| device.name.clone())
+                        );
+
+                        i += 1;
+                    }
+
+
+                    // prompt user for their device
                     println!(
-                        "    {i}. {:?}",
-                        device.desc.clone().unwrap_or(device.name.clone())
+                        "Please select your WiFi or Ethernet card, or if you're on a VPN, select the VPN: "
                     );
-                    i += 1;
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input).unwrap();
+                    let n = input.trim().parse::<usize>().unwrap() - 1;
+
+                    (&devices[n]).clone()
                 }
-
-                // prompt user for their device
-                println!(
-                    "Please select your WiFi or Ethernet card, or if you're on a VPN, select the VPN: "
-                );
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
-                let n = input.trim().parse::<usize>().unwrap() - 1;
-
-                (&devices[n]).clone()
             }
         };
 
@@ -177,7 +251,7 @@ fn main() {
         println!("Waiting for you to connect to a game in Sea of Thieves...\n");
 
         let webhook_url = &config.discord_webhook_url;
-        let mut last_ip = String::new();
+        let mut last_server = String::new();
         let mut connection_count = 0;
         let mut ignore_local_port: u16 = 0;
 
@@ -188,18 +262,14 @@ fn main() {
                     if let Some(IpHeader::Version4(ipv4, _)) = packet.ip {
                         if let Some(transport) = packet.transport {
                             if let Some(udp) = transport.udp() {
-                                if udp.destination_port == 3075 || udp.destination_port == 30005 {
+                                if udp.destination_port == 3075 || udp.destination_port == 30005 || udp.source_port == ignore_local_port {
                                     continue;
                                 }
-
                                 if get_sot_ports(sot_pid).contains(&udp.source_port) {
                                     let ip = ipv4.destination.map(|c| c.to_string()).join(".");
-                                    if ip != last_ip {
+                                    let server_info = format!("{}:{}", ip, udp.destination_port);
+                                    if server_info != last_server {
                                         connection_count += 1;
-                                        if udp.source_port == ignore_local_port {
-                                            println!("Still ignoring Local port: {}", udp.source_port);
-                                            continue;
-                                        }
 
                                         if connection_count == 2 {
                                             ignore_local_port = udp.source_port;
@@ -207,14 +277,13 @@ fn main() {
                                             continue;
                                         }
 
-
                                         // Use the reference to webhook_url here
                                         let json_payload = serde_json::json!({
                                                 "content": format!("Server: IP: {}:{}, Name: {}", ip, udp.destination_port, config.name)
                                         }).to_string();
 
                                         println!("You are connected to: {}:{}", ip, udp.destination_port);
-                                        last_ip = ip; // Update the last known IP
+                                        last_server = server_info;
 
                                         let client = reqwest::Client::new();
                                         let res = client.post(webhook_url) // No need to clone, as we're using a reference
