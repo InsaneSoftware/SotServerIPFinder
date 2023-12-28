@@ -8,11 +8,13 @@ use tokio::runtime::Runtime;
 use tokio::time::Duration;
 use get_if_addrs::{get_if_addrs};
 
+
 #[derive(Serialize, Deserialize)]
 struct Config {
     discord_webhook_url: String,
     name: String,
     guess_network: bool,
+    discord_user_id: String,
 }
 
 impl Config {
@@ -21,6 +23,7 @@ impl Config {
             discord_webhook_url: "https://discord.com/api/webhooks/your/webhook/url".to_string(),
             name: "ChangeMe".to_string(),
             guess_network: true,
+            discord_user_id: "".to_string(),
         }
     }
 
@@ -97,9 +100,12 @@ fn main() {
             let config_str = serde_json::to_string_pretty(&config).expect("Failed to serialize config");
             fs::write("config.json", config_str).expect("Failed to write updated config.json");
         }
+        
+        if config.discord_user_id != "" {
+            config.discord_user_id = format!("<@{}>", config.discord_user_id);
+        } 
 
         let guess_network = &config.guess_network;
-
 
         unsafe {
             let try_load_wpcap = libloading::Library::new("wpcap.dll");
@@ -288,7 +294,17 @@ fn main() {
 
                                         // Use the reference to webhook_url here
                                         let json_payload = serde_json::json!({
-                                                "content": format!("Server: IP: {}:{}, Name: {}", ip, udp.destination_port, config.name)
+                                                "content": "",
+                                                "embeds": [{
+                                                    "type": "rich",
+                                                    "title": format!("Server ip: ***{}:{}***", ip, udp.destination_port),
+                                                    "description": "",
+                                                    "color": 0x58dd00,
+                                                    "fields": [{
+                                                        "name": format!("{}", config.name),
+                                                        "value": format!("{}", config.discord_user_id),
+                                                    }],
+                                                }]
                                         }).to_string();
 
                                         println!("You are connected to: {}:{}", ip, udp.destination_port);
