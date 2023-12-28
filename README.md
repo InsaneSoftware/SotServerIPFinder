@@ -1,11 +1,11 @@
 ## Building
 This works only on Windows.
 
-Install rust language: https://www.rust-lang.org/tools/install
+1. Install rust language: https://www.rust-lang.org/tools/install
 
-Install Npccap: https://npcap.com/dist/npcap-1.72.exe
+2. Install Npccap: https://npcap.com/dist/npcap-1.72.exe
+Select WinPCap compatibility mode. when installing!
 
-1. Download and run [the Npcap installer](https://npcap.com/dist/npcap-1.72.exe). Select WinPCap compatibility mode. 
-2. Run `cargo build --release`.
+3. Run `cargo build --release`.  (RUN YOUR CMD AS ADMIN!)
 
-The [build script](build.rs) will automatically download [the Npcap SDK version 1.13](https://npcap.com/dist/npcap-sdk-1.13.zip) and place it in the `libs` directory.
+4. run your file in {YOURSOURCEFOLDER}/target/release/sot-server-ip-finder.exe 
