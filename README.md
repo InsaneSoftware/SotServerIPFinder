@@ -9,3 +9,6 @@ Select WinPCap compatibility mode. when installing!
 3. Run `cargo build --release`.  (RUN YOUR CMD AS ADMIN!)
 
 4. run your file in {YOURSOURCEFOLDER}/target/release/sot-server-ip-finder.exe 
+
+
+Optional: Run the build.bat file as admin!
