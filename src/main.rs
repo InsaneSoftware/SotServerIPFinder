@@ -12,6 +12,7 @@ use get_if_addrs::{get_if_addrs};
 struct Config {
     discord_webhook_url: String,
     name: String,
+    guess_network: bool,
 }
 
 impl Config {
@@ -19,6 +20,7 @@ impl Config {
         Config {
             discord_webhook_url: "https://discord.com/api/webhooks/your/webhook/url".to_string(),
             name: "ChangeMe".to_string(),
+            guess_network: true,
         }
     }
 
@@ -96,6 +98,8 @@ fn main() {
             fs::write("config.json", config_str).expect("Failed to write updated config.json");
         }
 
+        let guess_network = &config.guess_network;
+
 
         unsafe {
             let try_load_wpcap = libloading::Library::new("wpcap.dll");
@@ -148,9 +152,10 @@ fn main() {
             }
         }
 
-
         let auto_found_dev = devices.iter().find(|d| {
-            if insane_vpn_interface_name.is_some() {
+            if !*guess_network {
+                false
+            } else if insane_vpn_interface_name.is_some() {
                 false
             } else {
                 d.addresses.iter().any(|addr| {
@@ -203,7 +208,7 @@ fn main() {
 
                         // prompt user for their device
                         println!(
-                            "Please select your WiFi or Ethernet card, or if you're on a VPN, select the VPN: "
+                            "Please select your WiFi or Ethernet card, or if you're on a VPN, select the VPN:\n "
                         );
                         let mut input = String::new();
                         std::io::stdin().read_line(&mut input).unwrap();
@@ -212,7 +217,11 @@ fn main() {
 
                     (&devices[n]).clone()
                 } else {
-                    println!("Couldn't guess which network adapter to use. Please select one manually.");
+                    if !*guess_network {
+                        println!("Network Device Guessing Disabled in config.json. Please select one manually. \n");
+                    } else {
+                        println!("Couldn't guess which network adapter to use. Please select one manually.\n");
+                    }
 
                     println!("Network adapters attached to your PC: ");
 
