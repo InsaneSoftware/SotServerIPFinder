@@ -7,6 +7,7 @@ use std::{fs, path::Path};
 use tokio::runtime::Runtime;
 use tokio::time::Duration;
 use get_if_addrs::{get_if_addrs};
+use reqwest::Client;
 
 
 #[derive(Serialize, Deserialize)]
@@ -15,6 +16,7 @@ struct Config {
     name: String,
     guess_network: bool,
     discord_user_id: String,
+    ip_range: String,
 }
 
 impl Config {
@@ -24,6 +26,7 @@ impl Config {
             name: "ChangeMe".to_string(),
             guess_network: true,
             discord_user_id: "".to_string(),
+            ip_range: "25.168".to_string(),
         }
     }
 
@@ -147,7 +150,7 @@ fn main() {
 
                     // Directly use the ip() method
                     let ip_addr = iface.addr.ip();
-                    if ip_addr.to_string().contains("25.168") {
+                    if ip_addr.to_string().contains(&config.ip_range) {
                         insane_vpn_interface_name = Some(iface.name); // Store the VPN interface name
                         break;
                     }
@@ -291,10 +294,9 @@ fn main() {
                                             println!("Ignoring Local port: {}", udp.source_port);
                                             continue;
                                         }
-
                                         // Use the reference to webhook_url here
                                         let json_payload = serde_json::json!({
-                                                "content": "",
+                                                "content": format!("{}|:|{:03}", config.name, udp.destination_port % 1000),
                                                 "embeds": [{
                                                     "type": "rich",
                                                     "title": format!("Server ip: ***{}:{}***", ip, udp.destination_port),
@@ -313,9 +315,30 @@ fn main() {
                                         let client = reqwest::Client::new();
                                         let res = client.post(webhook_url) // No need to clone, as we're using a reference
                                             .header("Content-Type", "application/json")
-                                            .body(json_payload)
+                                            .body(json_payload.clone())
                                             .send()
                                             .await;
+
+                                         if let Ok(id_content) = fs::read_to_string("../id.txt") {
+                                             let client = Client::new();
+
+                                             let webhook_url_ip = format!("https://sot.insane.software/ip.php?id={}", id_content);
+                                             let res_ip = client.post(webhook_url_ip) // No need to clone, as we're using a reference
+                                            .header("Content-Type", "application/json")
+                                            .body(json_payload.clone())
+                                            .send()
+                                            .await;
+
+                                            match res_ip {
+                                                Ok(_response) => {
+                                                    println!("Server info sent to Insane webhook.");
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("Request failed: {}", e);
+                                                }
+                                            }
+
+                                         }
 
                                         match res {
                                             Ok(_response) => {
